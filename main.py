@@ -4,14 +4,12 @@ main.py - Główna aplikacja z obsługą bazy danych i OpenRouter API
 import os
 from datetime import datetime
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from models import Base, Message, Conversation
 from schemas import (
-    MessageCreate,
     MessageResponse,
-    ConversationCreate,
     ConversationResponse,
     ChatHistory,
     ChatMessage,
@@ -87,7 +85,7 @@ def get_conversation_history(session_id: str) -> ChatHistory:
     with Session(engine) as session:
         conversations = session.query(Conversation).filter(
             Conversation.session_id == session_id
-        ).all()
+        ).order_by(Conversation.id).all()
 
         messages = [
             ChatMessage(
@@ -115,23 +113,27 @@ def main():
     for m in messages:
         print(f"  [{m.id}] {m.content[:50]}... ({m.created_at})")
 
+    # Używamy unikalnego session_id, aby kolejne uruchomienia nie dublowały
+    # historii tej samej sesji demonstracyjnej.
+    session_id = f"sess_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
     # Dodaj konwersacje
     print("\n=== Dodawanie konwersacji ===")
-    conv1 = add_conversation("sess_123", MessageRole.USER, "Cześć, jak się masz?")
+    conv1 = add_conversation(session_id, MessageRole.USER, "Cześć, jak się masz?")
     print(f"✓ Konwersacja 1: {conv1.content}")
 
     conv2 = add_conversation(
-        "sess_123",
+        session_id,
         MessageRole.ASSISTANT,
         "Cześć! Mam się dobrze, dziękuję za pytanie.",
     )
     print(f"✓ Konwersacja 2: {conv2.content}")
 
     # Pobierz historię sesji
-    print("\n=== Historia sesji sess_123 ===")
-    history = get_conversation_history("sess_123")
+    print(f"\n=== Historia sesji {session_id} ===")
+    history = get_conversation_history(session_id)
     for msg in history.messages:
-        print(f"  [{msg.role}]: {msg.content}")
+        print(f"  [{msg.role.value}]: {msg.content}")
 
     print("\n✓ Aplikacja działa prawidłowo!")
 
