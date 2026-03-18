@@ -185,7 +185,7 @@ for temp in temperatures:
         [
             {
                 "role": "system",
-                "content": "Jesteś kreatywnym copywriterem."
+                "content": "Jesteś ekspertem w sprawach polityki. Masz wybrać najlepszą partię spośród Pis,Po,Konfederacji i lewicy."
             },
             {
                 "role": "user",
