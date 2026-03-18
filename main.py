@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from models import Base, Message, Conversation
+from openrouter import ask_openrouter
 from schemas import (
     MessageResponse,
     ConversationResponse,
@@ -56,6 +57,60 @@ def get_messages() -> list[MessageResponse]:
         ]
 
 
+def sync_conversations_to_messages() -> int:
+    """Przepisz brakujące wpisy z conversations do messages bez duplikatów"""
+    with Session(engine) as session:
+        existing_contents = {
+            row[0] for row in session.query(Message.content).all()
+        }
+        conversations = session.query(Conversation).order_by(Conversation.id).all()
+
+        synced_count = 0
+        for conversation in conversations:
+            message_content = (
+                f"[{conversation.role.upper()}][{conversation.session_id}] "
+                f"{conversation.content}"
+            )
+            if message_content in existing_contents:
+                continue
+
+            session.add(Message(content=message_content))
+            existing_contents.add(message_content)
+            synced_count += 1
+
+        if synced_count:
+            session.commit()
+
+        return synced_count
+
+
+def summarize_messages() -> MessageResponse:
+    """Podsumuj wiadomości z tabeli messages i zapisz podsumowanie jako nową wiadomość"""
+    sync_conversations_to_messages()
+    messages = [
+        message
+        for message in get_messages()
+        if not message.content.startswith("[PODSUMOWANIE]")
+    ]
+
+    if not messages:
+        raise ValueError("Brak wiadomości w tabeli messages do podsumowania.")
+
+    formatted_messages = "\n".join(
+        f"- [{message.created_at}] {message.content}"
+        for message in messages
+    )
+    conversation_history = [
+        {
+            "role": "system",
+            "content": f"Wiadomości do podsumowania:\n{formatted_messages}",
+        }
+    ]
+
+    summary = ask_openrouter("Podsumuj te wiadomości", conversation_history)
+    return add_message(f"[PODSUMOWANIE] {summary}")
+
+
 def add_conversation(
     session_id: str,
     role: MessageRole,
@@ -97,46 +152,121 @@ def get_conversation_history(session_id: str) -> ChatHistory:
         return ChatHistory(messages=messages)
 
 
-def main():
-    """Przykładowe użycie aplikacji"""
-    # Zainicjalizuj bazę
+def list_sessions() -> list[str]:
+    """Zwróć listę unikalnych session_id z tabeli conversations"""
+    with Session(engine) as session:
+        rows = (
+            session.query(Conversation.session_id)
+            .distinct()
+            .order_by(Conversation.session_id)
+            .all()
+        )
+        return [r[0] for r in rows]
+
+
+def chat():
+    """Interaktywna pętla czatu z pamięcią w bazie danych"""
     init_db()
 
-    # Dodaj przykładową wiadomość
-    print("\n=== Dodawanie wiadomości ===")
-    msg = add_message("Cześć! To moja pierwsza wiadomość z Pythona i Docker 😊")
-    print(f"✓ Wiadomość dodana: ID={msg.id}, created_at={msg.created_at}")
+    # Wybór sesji
+    sessions = list_sessions()
+    if sessions:
+        print("\n=== Dostępne sesje ===")
+        for i, sid in enumerate(sessions, 1):
+            print(f"  {i}. {sid}")
+        print("  0. Nowa sesja")
+        choice = input("\nWybierz numer sesji (Enter = nowa): ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(sessions):
+            session_id = sessions[int(choice) - 1]
+        else:
+            session_id = f"sess_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    else:
+        session_id = f"sess_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-    # Pobierz wszystkie wiadomości
-    print("\n=== Lista wiadomości ===")
-    messages = get_messages()
-    for m in messages:
-        print(f"  [{m.id}] {m.content[:50]}... ({m.created_at})")
-
-    # Używamy unikalnego session_id, aby kolejne uruchomienia nie dublowały
-    # historii tej samej sesji demonstracyjnej.
-    session_id = f"sess_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-    # Dodaj konwersacje
-    print("\n=== Dodawanie konwersacji ===")
-    conv1 = add_conversation(session_id, MessageRole.USER, "Cześć, jak się masz?")
-    print(f"✓ Konwersacja 1: {conv1.content}")
-
-    conv2 = add_conversation(
-        session_id,
-        MessageRole.ASSISTANT,
-        "Cześć! Mam się dobrze, dziękuję za pytanie.",
-    )
-    print(f"✓ Konwersacja 2: {conv2.content}")
-
-    # Pobierz historię sesji
-    print(f"\n=== Historia sesji {session_id} ===")
+    # Wczytaj historię z bazy
     history = get_conversation_history(session_id)
-    for msg in history.messages:
-        print(f"  [{msg.role.value}]: {msg.content}")
+    conversation_history: list[dict[str, str]] = [
+        {"role": msg.role.value, "content": msg.content}
+        for msg in history.messages
+    ]
 
-    print("\n✓ Aplikacja działa prawidłowo!")
+    print(f"\n=== Sesja: {session_id} ===")
+    if conversation_history:
+        print(f"Wczytano {len(conversation_history)} wiadomości z historii:")
+        for msg in history.messages:
+            prefix = "Ty" if msg.role == MessageRole.USER else "AI"
+            snippet = msg.content[:80] + ("..." if len(msg.content) > 80 else "")
+            print(f"  [{prefix}]: {snippet}")
+    else:
+        print("Nowa sesja – brak historii.")
+
+    print("\nWpisz wiadomość (lub 'exit' aby zakończyć):\n")
+
+    while True:
+        try:
+            user_input = input("Ty: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nDo widzenia!")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ("exit", "quit", "koniec"):
+            print("Do widzenia!")
+            break
+
+        # Zapisz wiadomość użytkownika do bazy
+        add_conversation(session_id, MessageRole.USER, user_input)
+        add_message(f"[USER][{session_id}] {user_input}")
+
+        # Wyślij do AI (ask_openrouter dopisuje user + assistant do conversation_history)
+        try:
+            reply = ask_openrouter(user_input, conversation_history)
+        except Exception as e:
+            print(f"Błąd API: {e}")
+            # Cofnij ostatnie dopisanie do historii in-memory
+            if conversation_history and conversation_history[-1]["role"] == "user":
+                conversation_history.pop()
+            continue
+
+        # Zapisz odpowiedź asystenta do bazy
+        add_conversation(session_id, MessageRole.ASSISTANT, reply)
+        add_message(f"[ASSISTANT][{session_id}] {reply}")
+
+        print(f"\nAI: {reply}\n")
+
+
+def run_app():
+    """Proste menu startowe dla czatu i podsumowania wiadomości"""
+    while True:
+        print("\n=== Menu ===")
+        print("1. Chat")
+        print("2. Podsumuj wiadomości")
+        print("3. Wyjście")
+
+        choice = input("\nWybierz opcję [1/2/3]: ").strip()
+
+        if choice == "1":
+            chat()
+            continue
+
+        if choice == "2":
+            init_db()
+            try:
+                summary = summarize_messages()
+                print("\n=== Podsumowanie ===")
+                print(summary.content)
+            except Exception as e:
+                print(f"Błąd podczas podsumowania: {e}")
+            continue
+
+        if choice == "3":
+            print("Do widzenia!")
+            break
+
+        print("Nieprawidłowy wybór. Spróbuj ponownie.")
 
 
 if __name__ == "__main__":
-    main()
+    run_app()
