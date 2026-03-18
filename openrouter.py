@@ -35,6 +35,21 @@ def ask_openrouter(
     response.raise_for_status()
 
     data = response.json()
+    usage = data.get("usage", {})
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+
+    if usage:
+        print(
+            "Tokeny -> "
+            f"prompt: {prompt_tokens}, "
+            f"completion: {completion_tokens}, "
+            f"total: {total_tokens}"
+        )
+    else:
+        print("Tokeny -> brak danych usage od providera/modelu")
+
     assistant_reply = data["choices"][0]["message"]["content"]
 
     # Po odpowiedzi modelu dopisujemy rolę assistant do historii.
