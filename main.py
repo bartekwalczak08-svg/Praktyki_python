@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from models import Base, Message, Conversation
-from openrouter import ask_openrouter
+from openrouter import ask_openrouter, ask_openrouter_few_shot
 from schemas import (
     MessageResponse,
     ConversationResponse,
@@ -216,6 +216,22 @@ def chat():
             print("Do widzenia!")
             break
 
+        # Klasyfikacja wiadomości użytkownika (few-shot)
+        try:
+            category_raw = ask_openrouter_few_shot(
+                task_description=CLASSIFICATION_TASK,
+                examples=CLASSIFICATION_EXAMPLES,
+                user_input=user_input,
+            )
+            category = "?"
+            for line in category_raw.splitlines():
+                if line.startswith("Category:"):
+                    category = line.split("Category:")[1].strip()
+                    break
+            print(f"[Kategoria: {category}]")
+        except Exception:
+            pass
+
         # Zapisz wiadomość użytkownika do bazy
         add_conversation(session_id, MessageRole.USER, user_input)
         add_message(f"[USER][{session_id}] {user_input}")
@@ -235,6 +251,45 @@ def chat():
         add_message(f"[ASSISTANT][{session_id}] {reply}")
 
         print(f"\nAI: {reply}\n")
+
+
+CLASSIFICATION_EXAMPLES = [
+    ("Aplikacja się zawiesza po kliknięciu przycisku Zapisz", "bug"),
+    ("Czy możlibyście dodać możliwość eksportu do PDF?", "feature_request"),
+    ("Jak zmienić język interfejsu?", "question"),
+]
+
+CLASSIFICATION_TASK = (
+    "Klasyfikuj wiadomość użytkownika na jedną z trzech kategorii:\n"
+    "- bug: problem techniczny, błąd w aplikacji\n"
+    "- feature_request: prośba o nową funkcjonalność\n"
+    "- question: pytanie dotyczące użytkowania\n\n"
+    "Odpowiedź podaj w formacie:\n"
+    "Category: [kategoria]\n"
+    "Confidence: [high/medium/low]\n"
+    "Explanation: [krótkie wyjaśnienie]"
+)
+
+
+def classify_message_interactive():
+    """Interaktywna klasyfikacja wiadomości w pętli"""
+    print("\n=== Klasyfikacja wiadomości (few-shot) ===")
+    print("Kategorie: bug | feature_request | question")
+    print("Wpisz 'exit' aby wrócić do menu.\n")
+
+    while True:
+        user_input = input("Wiadomość do klasyfikacji: ").strip()
+        if not user_input or user_input.lower() in ("exit", "quit", "koniec"):
+            break
+        try:
+            result = ask_openrouter_few_shot(
+                task_description=CLASSIFICATION_TASK,
+                examples=CLASSIFICATION_EXAMPLES,
+                user_input=user_input,
+            )
+            print(f"\nWynik:\n{result}\n")
+        except Exception as e:
+            print(f"Błąd API: {e}")
 
 
 def run_app():
